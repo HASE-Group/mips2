@@ -1,0 +1,362 @@
+//
+// Project:	DLX
+// Entity	Pipeline Display Unit
+// File		pipe_disp.hase
+// Date:	30 Sept 1999
+
+// The Pipeline Display Unit is used to display the instruction
+// at each stage in the pipeline. It mantains its own internal
+// pipeline to keep track of instructions in the execution units.
+
+$class_decls
+
+/* Variables  */
+  sim_entity_id entity[9];
+  sim_entity_id ev_id;
+  t_instrn_reg packet;
+
+  mem_access * myMA;
+
+  t_pipe_disp_reg Pipeline[4];
+  char char_buff[20], print_buff[20];
+  int latency;
+  int fltl;
+  int mull;
+  int divl;
+
+  int unit_count;
+  int exe_unit_count;
+  int any;
+
+
+//classes
+
+//void pipe_disp::progressPipe();
+void progressPipe();
+
+$class_defs
+
+void pipe_disp::progressPipe()
+{
+
+	 if (((Pipeline[3].status & 1) == 1) && (Pipeline[3].latency >0))
+	   EX4 = Pipeline[3].instrn;
+	 else
+	   EX4.reset();
+
+	 Pipeline[3].status = Pipeline[2].status;
+	 Pipeline[3].latency = Pipeline[2].latency - 1;
+	 Pipeline[3].instrn = Pipeline[2].instrn;
+
+	 if (((Pipeline[2].status & 1) == 1) && (Pipeline[2].latency >0))
+	   EX3 = Pipeline[2].instrn;
+	 else
+	   EX3.reset();
+
+	 Pipeline[2].status = Pipeline[1].status;
+	 Pipeline[2].latency = Pipeline[1].latency - 1;
+	 Pipeline[2].instrn = Pipeline[1].instrn;
+
+	 if (((Pipeline[1].status & 1) == 1) && (Pipeline[1].latency >0))
+	   EX2 = Pipeline[1].instrn;
+	 else
+	   EX2.reset();
+
+	 Pipeline[1].status = Pipeline[0].status;
+	 Pipeline[1].latency = Pipeline[0].latency - 1;
+	 Pipeline[1].instrn = Pipeline[0].instrn;
+
+	 if (((Pipeline[0].status & 1) == 1) && (Pipeline[0].latency >0))
+	   EX1 = Pipeline[0].instrn;
+	 else
+	   EX1.reset();
+
+// The following line is used only in the JAVA translation
+//>>>A Pipeline[0].instrn = new t_mips_instrn_set();
+}
+
+$body
+
+  for (int i=0; i<4; i++)
+  {
+   Pipeline[i].instrn.reset();
+   Pipeline[i].latency = 0;
+   Pipeline[i].status = 0;
+  }
+
+// set up entity ids
+  entity[0] = sim.get_entity_id("INSTR_FETCH");
+  entity[1] = sim.get_entity_id("INSTR_DECODE");
+  entity[2] = sim.get_entity_id("INT_EXE");
+  entity[3] = sim.get_entity_id("FLT_EXE");
+  entity[4] = sim.get_entity_id("MUL_EXE");
+  entity[5] = sim.get_entity_id("DIV_EXE");
+  entity[6] = sim.get_entity_id("MEM_ACCESS");
+  entity[7] = sim.get_entity_id("WRITE_BACK");
+
+  myMA = (mem_access*)sim.get_entity(sim.get_entity_id("MEM_ACCESS"));
+
+
+// collect latency values from Control Box (integer unit always 1)
+
+  fltl = Flt_exe::latency;
+  mull = Mul_exe::latency;
+  divl = Div_exe::latency;
+
+  unit_count = 0;
+  exe_unit_count = 0;
+  any = 0;
+
+while (1)
+{
+
+  sim_get_next(ev);
+
+  if (ev.scheduled_by() == entity[0])		// Instruction Fetch
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+	if ((packet.status & 1) == 1)
+	  I_F = packet.instrn;
+	else
+	  I_F.reset();
+
+	if (unit_count == 8)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+
+  else if (ev.scheduled_by() == entity[1])	// Instruction Decode
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+	if ((packet.status  & 1) == 1)
+	  I_D = packet.instrn;
+	else
+	  I_D.reset();
+
+	if (unit_count == 8)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+  else if (ev.scheduled_by() == entity[2])	// Integer 
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+        exe_unit_count = exe_unit_count + 1;
+	latency = 1;
+
+	  if ((packet.status & 1) == 1)
+	   {
+	    any = any + 1;
+	    Pipeline[0].status = packet.status;
+	    Pipeline[0].latency = latency;
+	    Pipeline[0].instrn = packet.instrn;
+	   }
+// If all 4 execution unit packets received
+
+	if (exe_unit_count == 4)
+	 {
+	  if (any == 0)			// no packets valid
+	   {
+	    Pipeline[0].status = 0;
+	    Pipeline[0].latency = 0;
+	    Pipeline[0].instrn.reset();
+	   }
+
+// Update display for EX4, EX3, EX2, EX1 and progress Pipeline provided
+// MA is not causing a hold up.
+
+	  if (!myMA->MAHeld1)
+	   {
+	    progressPipe();
+	   }
+	  exe_unit_count = 0;	// reset count
+	  any = 0;		// reset any
+	 }
+
+	if (unit_count == 8)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+
+  else if (ev.scheduled_by() == entity[3])	// Floating Point
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+        exe_unit_count = exe_unit_count + 1;
+	latency = fltl;
+
+	  if ((packet.status & 1) == 1)
+	   {
+	    any = any + 1;
+	    Pipeline[0].status = packet.status;
+	    Pipeline[0].latency = latency;
+	    Pipeline[0].instrn = packet.instrn;
+	   }
+// If all 4 execution unit packets received
+
+	if (exe_unit_count == 4)
+	 {
+	  if (any == 0)			// no packets valid
+	   {
+	    Pipeline[0].status = 0;
+	    Pipeline[0].latency = 0;
+	    Pipeline[0].instrn.reset();
+	   }
+
+// Update display for EX4, EX3, EX2, EX1 and progress Pipeline 
+
+	  if (!myMA->MAHeld1)
+	   {
+	     progressPipe();
+	   }
+
+	 exe_unit_count = 0;	// reset count
+	 any = 0;		// reset any
+	 }
+
+	if (unit_count == 8)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+
+  else if (ev.scheduled_by() == entity[4])	// Multiply
+
+     {
+	unit_count = unit_count + 1;
+        exe_unit_count = exe_unit_count + 1;
+	latency = mull;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+	  if ((packet.status & 1) == 1)
+	   {
+	    any = any + 1;
+	    Pipeline[0].status = packet.status;
+	    Pipeline[0].latency = latency;
+	    Pipeline[0].instrn = packet.instrn;
+	   }
+// If all 4 execution unit packets received
+
+	if (exe_unit_count == 4)
+	 {
+	  if (any == 0)			// no packets valid
+	   {
+	    Pipeline[0].status = 0;
+	    Pipeline[0].latency = 0;
+	    Pipeline[0].instrn.reset();
+	   }
+
+// Update display for EX4, EX3, EX2, EX1 and progress Pipeline 
+
+	  if (!myMA->MAHeld1)
+	   {
+	    progressPipe();
+	   }
+
+	 exe_unit_count = 0;	// reset count
+	 any = 0;		// reset any
+	 }
+
+	if (unit_count == 8)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+
+  else if (ev.scheduled_by() == entity[5])	// Divide
+
+     {
+	unit_count = unit_count + 1;
+        exe_unit_count = exe_unit_count + 1;
+	latency = divl;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+	  if ((packet.status & 1) == 1)
+	   {
+	    any = any + 1;
+	    Pipeline[0].status = packet.status;
+	    Pipeline[0].latency = latency;
+	    Pipeline[0].instrn = packet.instrn;
+	   }
+// If all 4 execution unit packets received
+
+	if (exe_unit_count == 4)
+	 {
+	  if (any == 0)			// no packets valid
+	   {
+	    Pipeline[0].status = 0;
+	    Pipeline[0].latency = 0;
+	    Pipeline[0].instrn.reset();
+	   }
+
+// Update display for EX4, EX3, EX2, EX1 and progress Pipeline 
+
+	  if (!myMA->MAHeld1)
+	   {
+	    progressPipe();
+	   }
+
+	 exe_unit_count = 0;	// reset count
+	 any = 0;		// reset any
+	 }
+
+	if (unit_count == 8)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+
+  else if (ev.scheduled_by() == entity[6])	// Memory Access
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+	if ((packet.status & 1) == 1)
+	  M_A = packet.instrn;
+	else
+	  M_A.reset();
+
+	if (unit_count == 8)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+
+  else if (ev.scheduled_by() == entity[7])	// Write Back
+
+     {
+	unit_count = unit_count + 1;
+	SIM_CAST(t_instrn_reg, packet, ev);
+
+	if ((packet.status & 1) == 1)
+	  W_B = packet.instrn;
+	else
+	  W_B.reset();
+
+	if (unit_count == 8)
+	{
+	  dump_state_i();
+	  unit_count = 0;	// reset unit counter
+	}
+     }
+
+}

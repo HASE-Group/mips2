@@ -1,0 +1,171 @@
+//
+// Project:	MIPS V2.0
+// Entity:	Write Back Unit
+// File:	write_back.hase
+// Date:	3 April 2002
+//
+// The Write Back Unit receives packets from the Memory Access Unit.
+// Whenever a valid packet is received, the Write Back Unit constructs a
+// Register Write Access packet and sends it to the Programmable Registers.  
+// The Programmable Registers are not clocked so no packet needs to be
+// sent if there is no valid instruction in the Write Back Unit.
+// The Registers are assumed to have 2 ports, one for reading and one for
+// writing. To make this work in the simulation, the write back occurs in
+// the second phase of the clock, i.e. after the WAW/RAW checks, which
+// then clear in the next clock cycle.
+
+// Modified April 2002 to use new clock mechanism and to implement JAL/JALR,
+// the first cycle of which implicitly write to R31
+
+$class_decls
+
+//entity references
+
+  sim_entity_id pipe;
+
+// structures and variables
+  t_write_back_struct InputPacket, WB_Input_Reg;	// Input Register
+  t_instrn_reg Instruction;
+  t_reg_write WB_Output;	// Output packet
+
+  char* Dest_reg;
+  char destT;
+  int dest;
+  int data, sign_ext, IncRegNo;
+  int old_state;
+  bool doubleWrite;
+
+ // int hword0_mask;
+
+$pre
+
+  pipe = sim.get_entity_id("PIPE_DISP");
+  //hword0_mask = -1 ^ 65535;
+  my_state = W_VOID;
+  old_state = W_VOID;
+  doubleWrite = false;
+  dump_state();
+
+$phase0
+
+// predicate for use in sim_waiting test
+
+  sim_from_port instr_packet(instr_in);	    
+
+ // DEAL WITH INPUT
+
+    WB_Input_Reg.status = 0;		// initialise to nonvalid
+
+
+	if (sim_waiting(ev, instr_packet) > 0)
+	 {
+	  SIM_CAST(t_write_back_struct, InputPacket, ev);
+
+		WB_Input_Reg.status = InputPacket.status;
+		WB_Input_Reg.instrn = InputPacket.instrn;
+		WB_Input_Reg.data   = InputPacket.data;
+  
+
+	}
+// always send a packet to Pipeline Display even when held, otherwise Display
+// doesn't work
+
+		Instruction.status = WB_Input_Reg.status;
+		Instruction.instrn = WB_Input_Reg.instrn;
+		sim_schedule(pipe, 0.0, INSTRUCTION,
+			SIM_PUT(t_instrn_reg, Instruction));
+
+	if ((WB_Input_Reg.status & 1) == 1)
+	  {my_state = W_BUSY;
+	   IncRegNo = WB_Input_Reg.status & 2;	// used in double cycle 
+	   IncRegNo = IncRegNo >> 1;		// instructions to access
+	  }					// second register
+	else
+	  {my_state = W_VOID;}
+
+	if (my_state != old_state)
+	  {dump_state();}
+	old_state = my_state;
+
+	// (ClockPhase == 1)
+
+// DEAL WITH OUTPUT
+
+	if ((WB_Input_Reg.status & 1) == 1)// if input is valid, construct a packet to send to Registers
+{
+  WB_Output.data = WB_Input_Reg.data;
+  /*if ((WB_Input_Reg.instrn.function == t_mips_instrn_set::JAL)
+   || (WB_Input_Reg.instrn.function == t_mips_instrn_set::JALR))
+	{
+	 strcpy(WB_Output.reg_type, "R");
+	 WB_Output.reg_no = 31;
+	}
+  else*/
+   if (WB_Input_Reg.instrn.decode_ALUMD())
+  {
+	strcpy(WB_Output.reg_type, "S");
+	WB_Output.reg_no = 1 ;
+  }
+  else if (WB_Input_Reg.instrn.decode_FPCP())
+  {
+	strcpy(WB_Output.reg_type, "F");
+	WB_Output.reg_no = 31 ;
+  }
+  else if (WB_Input_Reg.instrn.function == t_mips_instrn_set::MTHI)
+  {
+	 strcpy(WB_Output.reg_type, "S");
+	 WB_Output.reg_no = 1;
+  }
+  else if (WB_Input_Reg.instrn.function == t_mips_instrn_set::MTLO)
+  {
+	 strcpy(WB_Output.reg_type, "S");
+	 WB_Output.reg_no = 0;
+  }
+	
+  else 
+   {
+    if (WB_Input_Reg.instrn.decode_LOAD())
+	 {Dest_reg = WB_Input_Reg.instrn.load_field.dest_reg;}
+
+    else if (WB_Input_Reg.instrn.decode_MOVE())
+	{Dest_reg = WB_Input_Reg.instrn.move_field.dest_reg;}
+
+    else if (WB_Input_Reg.instrn.decode_CONV())
+	{Dest_reg = WB_Input_Reg.instrn.conv_field.dest_reg;}
+    
+    else if (WB_Input_Reg.instrn.decode_MF())
+	{Dest_reg = WB_Input_Reg.instrn.dest_reg;}
+	
+    else if (WB_Input_Reg.instrn.decode_ALU())
+	{Dest_reg = WB_Input_Reg.instrn.alu_field.dest_reg; }
+
+    else if (WB_Input_Reg.instrn.decode_ALUI())
+	{Dest_reg = WB_Input_Reg.instrn.alui_field.dest_reg; }
+	
+    else if (WB_Input_Reg.instrn.decode_TC())
+	{Dest_reg = WB_Input_Reg.instrn.tc_field.dest_reg1; }
+    //else if (WB_Input_Reg.instrn.decode_ALUF())
+//	{Dest_reg = WB_Input_Reg.instrn.aluf_field.dest_reg; }
+ 
+    
+
+	destT = Decode_Register(Dest_reg).type;
+	dest  = Decode_Register(Dest_reg).number + IncRegNo;
+	
+	  if (destT == 'R')	{strcpy(WB_Output.reg_type, "R");}
+	  if (destT == 'F')	{strcpy(WB_Output.reg_type, "F");}
+	  if (destT == 'S')	{strcpy(WB_Output.reg_type, "S");}
+	  WB_Output.reg_no =  dest;
+   }
+	
+
+  }
+
+$phase1
+	if((WB_Input_Reg.instrn.function != t_mips_instrn_set::VOID)&&((WB_Input_Reg.status & 1) == 1))
+	{
+		send_REG_WRITE(to_registers, WB_Output);
+		WB_Input_Reg.instrn.function = t_mips_instrn_set::VOID;
+	}
+
+	// end of ClockPhase = 1

@@ -1,0 +1,664 @@
+
+// Project:	MIPS I
+// Entity	Memory Access Unit
+// File		mem_access.hase
+// Date:	2004
+
+// The Memory Access Unit receives all instructions that have completed
+// execution.  Arithmetic instruction packets contain the data to be sent
+// to the registers via the Write Back Unit in the data1 field.
+
+// Load instruction packets contain a memory address in the data1 field
+// which is sent to the Memory Unit. The data returned from the Memory
+// is passed to the Write Back Unit.
+
+// Store instruction packets contain a memory address in the data1 field
+// and the data to be sent to Memory in the data2 field.
+
+// In versions prior to V2.0 the model assumes that the memory will reply
+// to a request sent in Clockphase 0 within the same clock. In V1.4 the
+// request is sent in Clockphase 1 and returned in either the following
+// or a subsequent Clockphase 1, depending on the memory latency parameter
+// set in the memory entity. MA enters Held mode until the memory reply
+// has been processed. Whilst held, no more packets will be received from
+// the Execution units.
+
+// Branch instruction packets contain the new PC address or the offset
+// in the instruction field of the packet. Conditions are evaluated in
+// the relevant execution unit and carried through as bits in the Status
+// field of the packet. Floating-point compares set the FP bit; fl-pt
+// branches (BFPT, BFPF) use the FP as their condition.
+// If a control transfer occurs an untraced packet is sent to the
+// Instruction Fetch Unit to update the Prefetch Program Counter
+// and ClearPipe is invoked in ID and IF
+
+// updated April 2002 to use new clock mechanism
+
+$class_decls
+
+//entities
+
+  sim_entity_id pipe;
+  sim_entity_id memory;
+
+  instr_fetch * myIF;
+  instr_decode * myID;
+
+//structures and variables
+  t_instrn_reg Instruction;
+  unit_data_struct IntOutput, FltOutput, MulOutput, DivOutput, MA_Input_Reg;
+  t_write_back_struct MA_Output;
+		// t_write_back_struct = status | inst | data
+  t_d_mem_access MemRequest;
+				// MemRequest.status bits
+				// 0 = read/write
+				// 1 = 0 always for data
+				// 2 = write to byte 3
+				// 3 = write to byte 2
+				// 4 = write to byte 1
+				// 5 = write to byte 0
+  t_exe_rslt MemOutput;
+  t_branch_rslt BranchResult;
+
+  bool MAHeld, MAHeld1, cond;
+
+  double operand;
+  int hword0_mask;
+  int hword1_mask;
+  int byte3_mask;
+  int byte_sign1;
+
+  int Byte_address;
+
+  int PCinc;
+  int Interrupt;
+  bool isTrapped;
+  int Forward;	// set for instructions which send a result to Write Back Unit
+  bool Update_PPC;
+//
+
+int MemReqOutstanding;
+int MemoryReadAccess;
+int MemoryWriteAccess;
+char *reg31_label; // use to save the label when JAL
+
+int branches_taken, branches_not_taken;
+$pre
+
+pipe = sim.get_entity_id("PIPE_DISP");
+
+myIF = (instr_fetch*)sim.get_entity(sim.get_entity_id("INSTR_FETCH"));
+myID = (instr_decode*)sim.get_entity(sim.get_entity_id("INSTR_DECODE"));
+
+
+//half word and byte masks
+   hword0_mask = -1 ^ 65535;	// 11111111 11111111 00000000 00000000
+   hword1_mask = 65535;		// 00000000 00000000 11111111 11111111
+   byte3_mask = 255;		// 00000000 00000000 00000000 11111111
+   byte_sign1 = -1 ^ 255;	// 11111111 11111111 11111111 00000000
+
+  Interrupt = 0;
+  isTrapped = false;
+  Forward = 0;	// set for instructions which send a result to
+			// the Write Back Unit
+  strcpy(PC.label, "main");
+  PC.offset = 0;
+  Update_PPC = false;
+//
+
+ MemReqOutstanding = 0;
+ MemoryReadAccess = 0;
+ MemoryWriteAccess = 0;
+
+MA_Input_Reg.instrn.reset();
+MA_Input_Reg.status = 0;
+MA_Output.instrn.reset();
+MA_Output.status = 0;
+FP = 0;
+MAHeld = false;
+MAHeld1 = false;
+
+ myIF->InitialisePC(PC);	// initialises PPC to PC in IF
+
+ my_state = MA_VOID;
+ dump_state();
+
+$phase0
+ 
+// predicates for use in sim_waiting test
+
+  sim_from_port mem_packet(from_memory);	    
+  sim_from_port from_int(from_int_exe);
+  sim_from_port from_flt(from_flt_exe);
+  sim_from_port from_mul(from_mul_exe);
+  sim_from_port from_div(from_div_exe);	
+
+// INPUT SECTION
+// Unless MA is held up waiting for a reply from Memory,
+// check for valid packet from execution units.
+// Copy valid packet to MA_Input_Reg.
+
+  if (!MAHeld)
+  {
+ 	MA_Input_Reg.status = 0;	// Initialise MA_Input_Reg valid to 0
+
+	if (sim_waiting(ev, from_int) > 0)
+
+	 {
+	  SIM_CAST( unit_data_struct, IntOutput, ev );
+	   if ((IntOutput.status & 1) == 1)
+		{
+		MA_Input_Reg.status = IntOutput.status;
+		MA_Input_Reg.instrn = IntOutput.instrn;
+		MA_Input_Reg.data1 = IntOutput.data1;
+		MA_Input_Reg.data2 = IntOutput.data2;
+		}
+	 }
+
+	if (sim_waiting(ev, from_flt) > 0)
+
+	 {
+	  SIM_CAST( unit_data_struct, FltOutput, ev );
+	   if ((FltOutput.status & 1) == 1)
+		{
+		MA_Input_Reg.status = FltOutput.status;
+		MA_Input_Reg.instrn =  FltOutput.instrn;
+		MA_Input_Reg.data1 = FltOutput.data1;
+		}
+	 }
+
+	if (sim_waiting(ev, from_mul) > 0)
+
+	 {
+	  SIM_CAST( unit_data_struct, MulOutput, ev );
+	   if ((MulOutput.status & 1) == 1)
+		{
+		MA_Input_Reg.status = MulOutput.status;
+		MA_Input_Reg.instrn = MulOutput.instrn;
+		MA_Input_Reg.data1 = MulOutput.data1;
+		}
+	 }
+
+	if (sim_waiting(ev, from_div) > 0)
+
+	 {
+	  SIM_CAST( unit_data_struct, DivOutput, ev );
+	   if ((DivOutput.status & 1) == 1)
+		{
+		MA_Input_Reg.status = DivOutput.status;
+		MA_Input_Reg.instrn = DivOutput.instrn;
+		MA_Input_Reg.data1 = DivOutput.data1;
+		}
+	 }
+
+// if more than 1 valid packet, signal ERROR
+
+	if (((IntOutput.status & 1)
+	   + (FltOutput.status & 1) 
+	   + (MulOutput.status & 1)
+	   + (DivOutput.status & 1)) > 1)
+	   {
+	   stopSimulation(-50);
+	   }
+	}	// close if MAHold == 0 
+
+// always send a packet to Pipeline Display even when held, otherwise Display
+// doesn't work
+		Instruction.status = MA_Input_Reg.status;
+		Instruction.instrn = MA_Input_Reg.instrn;
+		sim_schedule(pipe, 0.0, INSTRUCTION,
+			SIM_PUT(t_instrn_reg, Instruction));
+
+// States can now be
+
+// Input status = 0			- do nothing
+// Input status = 1 and MAHold = 0	- process input instruction
+// Input status = 1 and MAHold = 1	- look for memory reply
+//					- no reply: do nothing
+//					- reply: process held instruction
+
+  if ((MA_Input_Reg.status & 1) == 0)
+	{
+	 my_state = MA_VOID;
+
+	}
+
+  else if (((MA_Input_Reg.status & 1) == 1) && !MAHeld)
+
+   // INPUT INSTRUCTION PROCESSING
+   // Arithmetic instructions:	forward to Write Back Unit
+   // Load instructions:	send Read access to Memory, set waiting flag
+   // Store instructions:	send Write access to Memory, set waiting flag
+   // Branch operations:	execute
+
+	{
+        my_state = MA_BUSY;
+	PCinc = MA_Input_Reg.status & 4;	// select bit 29
+	if (PCinc==0) PCinc = 1; else PCinc = 0; // invert bit 29
+	//PCinc = (PCinc ^ 4);		// invert bit 29
+					// if status bit 29 = 0, PCinc = 4
+					// if status bit 29 = 1, PCinc = 0
+
+/*
+      if (MA_Input_Reg.instrn.decode_COMP())
+// Floating-point comparison instructions set FP bit 0 to 0 or 1
+	{
+	 Forward = 0;	// instruction will not be forwarded to Write Back
+			// Unit because execution completes in MA Unit
+	 
+	if ((MA_Input_Reg.status & 256) == 256)
+		 {FP = FP | 1;}		// set FP bit 0 to 1
+	 else   {FP = FP | 1; 		// ) set FP bit 0 to 0 without
+		 FP = FP - 1;}		// ) affecting other bits
+		 PC.offset += PCinc;	// increment Program Counter
+	}				// end of COMP code
+*/
+      //else 
+      if (MA_Input_Reg.instrn.function == t_mips_instrn_set::NOP)
+	{
+	Forward = 0;
+	PC.offset +=  PCinc;
+	}			// end of NOP code
+
+// start of control transfer code
+      else if (MA_Input_Reg.instrn.decode_BRNC()
+    //  || (MA_Input_Reg.instrn.function == t_mips_instrn_set::BC1F) 
+     // || (MA_Input_Reg.instrn.function == t_mips_instrn_set::BC1T)
+      || MA_Input_Reg.instrn.decode_BRNCI() 
+      ) 
+	{
+	cond = false;
+	cond = ((MA_Input_Reg.status & 256) != 0);
+		
+	   if (cond)
+	   {
+//		branches_taken++; //for statistics
+		
+		Forward = 0;
+		
+		
+			//Handles both brach type for ether branching to
+			// a label or offset
+					
+			int offset = atoi(MA_Input_Reg.instrn.decode_BRNC() ? MA_Input_Reg.instrn.brnc_field.label : MA_Input_Reg.instrn.brnc_i_field.label);//>>2
+			if(offset != 0)
+				//This section handles the branch being an offset
+				PC.offset += offset;
+			else
+				//This section handles the branch being a label 
+			{
+				PC.offset = 0;
+			   	strcpy(PC.label, (MA_Input_Reg.instrn.decode_BRNC() ? MA_Input_Reg.instrn.brnc_field.label : MA_Input_Reg.instrn.brnc_i_field.label)) ;
+			}
+		
+		Forward = 0;
+		BranchResult.addr = PC;
+	 	Update_PPC = true;
+	    }
+	    else
+	    {
+	  	Forward = 0;
+		PC.offset += 2*PCinc; // increment Program Counter
+//		branches_not_taken++; // for statistics
+	    }
+	}
+
+      else if (MA_Input_Reg.instrn.decode_JIMM() || (MA_Input_Reg.instrn.function == t_mips_instrn_set::BREAK))
+	{
+	 if (MA_Input_Reg.instrn.function == t_mips_instrn_set::BREAK)
+	  {
+	   Forward = 0;
+	   PC.offset +=  PCinc;
+	   Interrupt = 1;
+	  }
+	 else if((MA_Input_Reg.instrn.function == t_mips_instrn_set::BC1F) 
+      		|| (MA_Input_Reg.instrn.function == t_mips_instrn_set::BC1T))
+	{
+		cond = false;
+		cond = ((MA_Input_Reg.status & 256) != 0);
+		
+	   if (cond)
+	   {
+		branches_taken++; //for statistics // was commented out
+printf("branch taken\n");
+		
+		Forward = 0;	
+		if(atoi(MA_Input_Reg.instrn.label) != 0)
+		{
+			PC.offset = atoi(MA_Input_Reg.instrn.label);
+			strcpy(PC.label, "main");
+		}
+		else
+		{
+			PC.offset = 0;
+			strcpy(PC.label, MA_Input_Reg.instrn.label);
+		}
+		
+		BranchResult.addr = PC;
+	 	Update_PPC = true;
+	   }
+	   else
+	   {
+	  	Forward = 0;
+		PC.offset += 1*PCinc; // increment Program Counter
+		branches_not_taken++; // for statistics  // was commented out
+printf("branch not taken\n");
+
+	   }
+	}
+         else if (MA_Input_Reg.instrn.function == t_mips_instrn_set::J
+	 	//|| MA_Input_Reg.instrn.function == t_mips_instrn_set::JAL
+		)
+	  {
+	   if(MA_Input_Reg.instrn.function == t_mips_instrn_set::J)
+	   	Forward = 0;
+	   //Added to support case when an absolute memory address
+	   //is used instead of a label
+	   if(atoi(MA_Input_Reg.instrn.label) != 0)
+	   {
+	   	PC.offset = atoi(MA_Input_Reg.instrn.label);
+	   	strcpy(PC.label, "main");
+	   }
+	   else
+	   {
+	   	PC.offset = 0;
+	   	strcpy(PC.label, MA_Input_Reg.instrn.label);
+	   }
+	   BranchResult.addr = PC;
+	   Update_PPC = true;
+	  }
+/*
+	 else				// JAL
+	  {
+	     PC.offset = 0;
+	   if(atoi(MA_Input_Reg.instrn.label) != 0)
+	   {
+	   	PC.offset = atoi(MA_Input_Reg.instrn.label);
+	   	strcpy(PC.label, "main");
+	   }
+	   else
+	   {
+	   	PC.offset = 0;
+	   	strcpy(PC.label, MA_Input_Reg.instrn.label);
+	   }
+	     BranchResult.addr = PC;
+	     Update_PPC = true;
+
+	     Forward = 1;
+	     MA_Output.instrn = MA_Input_Reg.instrn;
+	     MA_Output.data = PC.offset + 8;
+	     //strcpy(reg31_label, PC.label);
+	  }*/				// end of JAL code
+	}				// end of JIMM code
+      else if (MA_Input_Reg.instrn.function == t_mips_instrn_set::JR)
+	{
+		Forward = 0;
+		PC.offset = ((int)MA_Input_Reg.data1 >> 2);
+		strcpy(PC.label, "main");
+		BranchResult.addr = PC;
+		Update_PPC = true;
+	}/*				
+      else if (MA_Input_Reg.instrn.function == t_mips_instrn_set::JALR)
+	{
+		Forward = 0;
+		PC.offset = ((int)MA_Input_Reg.data1 >> 2);
+		strcpy(PC.label, "main");
+		BranchResult.addr = PC;
+		Update_PPC = true;
+	}	*/			
+
+ /*     else if (MA_Input_Reg.instrn.decode_JREG())
+	{
+	 Forward = 0;
+					// assumes it's JR or JALR
+	 PC.offset = (int) MA_Input_Reg.data1;
+	 strcpy(PC.label, reg31_label);
+	 BranchResult.addr = PC;
+	 Update_PPC = true;
+	}*/				// end of JREG code
+
+// end of control transfer code
+
+      else if (MA_Input_Reg.instrn.decode_LOAD())
+	{
+	 Forward = 0;		// Forward set to 1 when data is returned
+	 MemRequest.status = 0;
+	 MemRequest.data = 0;
+	 Byte_address = (int)MA_Input_Reg.data1 & 3;
+	 printf("Byte Address = %d\n",Byte_address);
+	 MemRequest.address = (int)MA_Input_Reg.data1 >> 2;
+	 MemoryReadAccess = 1;				// set Read Flag
+	 MAHeld = true;		// stalls pipeline whilst waiting for memory
+	}
+
+      else if (MA_Input_Reg.instrn.decode_STORE())
+	{
+	 Forward = 0;
+	 MemRequest.status = 1;
+	 Byte_address = (int)MA_Input_Reg.data1 & 3;
+	 MemRequest.address = (int)MA_Input_Reg.data1 >> 2;
+	 operand = MA_Input_Reg.data2;
+
+	if (MA_Input_Reg.instrn.function == t_mips_instrn_set::SB)
+		{
+		 operand = (int)operand & byte3_mask;
+		 if      ((Byte_address & 3) == 0)	// write to byte 0
+			{operand = ((int)operand << 24);
+			 MemRequest.status = MemRequest.status | 32;}
+		 else if ((Byte_address & 3) == 1)	// write to byte 1
+			{operand = ((int)operand << 16);
+			 MemRequest.status = MemRequest.status | 16;}
+		 else if ((Byte_address & 3) == 2)	// write to byte 2
+			{operand = ((int)operand <<  8);
+			 MemRequest.status = MemRequest.status | 8;}
+		 else					// write to byte 3
+			 {MemRequest.status = MemRequest.status | 4;}
+		}
+
+	else if (MA_Input_Reg.instrn.function == t_mips_instrn_set::SH)
+		{
+		if((Byte_address & 1) > 0)
+		 	stopSimulation(-12);
+		 operand = (int)operand & hword1_mask;
+		 if      ((Byte_address & 2) == 0)	// write to bytes 0 & 1
+			{operand = ((int)operand << 16);
+			 MemRequest.status = MemRequest.status | 48;}
+		 else					// write to bytes 2 & 3
+			 {MemRequest.status = MemRequest.status | 12;}
+		}
+	else		 		// SW or SF, write to all 4 bytes
+		{MemRequest.status = MemRequest.status | 60;}
+
+
+	 MemRequest.data = operand;
+	 MemoryWriteAccess = 1;		// set Write Flag
+	 MAHeld = true;	// stalls pipeline whilst waiting for memory
+	}	// end of store order code
+
+     else	// for all other instructions,
+		// copy result from MA_Input register to MA_Output
+	{
+	 Forward = 1;
+	 MA_Output.instrn = MA_Input_Reg.instrn;
+	 MA_Output.data = MA_Input_Reg.data1;
+		PC.offset +=  PCinc;		// increment Program Counter
+	}
+
+// If a control transfer occurs (unconditional jump, or conditional branch
+// for which the condition is satisfied, with no branch predicted), the
+// instructions in Instruction Fetch (IF) and Instruction Decode (ID) must be
+// invalidated. The Execution Units do not need to be invalidated since the
+// only instruction which can be in (one of) them is a delay slot instruction.
+// IF and ID set the status of their outgoing instructions to 0 in ClockPhase
+// 1. ID invokes clearHaz in the Scoreboard to clear any hazards.
+
+	if (Update_PPC)
+	 {
+	  myIF->ClearPipe();
+	  myID->ClearPipe();
+	 }
+
+    }	// closes Input Register valid = 1 and Hold = 0
+ 
+  // PROCESS REPLY FROM MEMORY
+   // If MAHold = 1, look for packet from memory
+   // for STORE orders, this is an acknowledge
+   // for LOAD orders, the packet contains data which must be processed
+
+
+  else if (((MA_Input_Reg.status & 1) == 1) && MAHeld)
+	{				// valid instruction held up
+					// waiting for reply from memory
+
+	if (sim_waiting(mem_packet) == 0)
+	{
+	 my_state = MA_HELD;
+	}
+
+	else if (sim_waiting(mem_packet) > 0)
+	 {
+	 my_state = MA_BUSY;
+	 MemReqOutstanding = 0;
+	  sim_select(mem_packet, ev);
+		if (MemoryWriteAccess == 1)
+		{
+		  SIM_CAST(t_exe_rslt, MemOutput, ev);
+		  PC.offset += PCinc;		// increment Program Counter
+		  MAHeld = false;
+		  MemoryWriteAccess = 0;	// reset Write Flag
+		}
+		else if (MemoryReadAccess == 1)
+		{
+		  SIM_CAST(t_exe_rslt, MemOutput, ev);
+
+		  operand = MemOutput.data; 
+		  //Added 2003 Sandy Thomson
+		  //Used for floating point representation of memory
+		  if(MA_Input_Reg.instrn.function == t_mips_instrn_set::LWC1){
+			//32 bit precision
+		        operand = (float)MemOutput.data; 
+		  }
+
+		  //end of addition
+
+		  MA_Output.instrn = MA_Input_Reg.instrn;
+		  Forward = 1;			// set Forward flag
+		  MAHeld = false;
+		  MemoryReadAccess = 0;		// reset Read Flag
+
+	// Select operand from within store word
+				
+
+	if (MA_Input_Reg.instrn.function == t_mips_instrn_set::LB)
+		{
+		 if      ((Byte_address & 3) == 0)	// byte 0
+			{operand = ((int)operand >> 24);}
+		 else if ((Byte_address & 3) == 1)	// byte 1
+			{operand = ((int)operand >> 16);}
+		 else if ((Byte_address & 3) == 2)	// byte 2
+			{operand = ((int)operand >>  8);}
+		 operand = (int)operand & byte3_mask;
+	}
+
+
+	else if (MA_Input_Reg.instrn.function == t_mips_instrn_set::LBU)
+		{
+		 if      ((Byte_address & 3) == 0)	// byte 0
+			{operand = ((int)operand >> 24);}
+		 else if ((Byte_address & 3) == 1)	// byte 1
+			{operand = ((int)operand >> 16);}
+		 else if ((Byte_address & 3) == 2)	// byte 2
+			{operand = ((int)operand >>  8);}
+		 operand = (int)operand & byte3_mask;
+		}
+
+	else if (MA_Input_Reg.instrn.function == t_mips_instrn_set::LH)
+		{
+		if((Byte_address & 1)> 0)
+		 	stopSimulation(-11);
+		 if ((Byte_address & 2) == 2)	// half word 0
+			{operand = ((int)operand >> 16);}
+		 else {operand = (int)operand & hword1_mask;}
+
+		  if (((int)operand & 32768) == 0)	// test sign
+			{operand = (int)operand & hword1_mask;}	// 0s
+		  else	{operand = (int)operand | hword0_mask;}	// 1s
+		}
+
+	else if (MA_Input_Reg.instrn.function == t_mips_instrn_set::LHU)
+	{
+		if((Byte_address & 1)> 0)
+		 	stopSimulation(-11);
+		if ((Byte_address & 2) == 2)		// half word 0
+			{operand = ((int)operand >> 16);}
+		 operand = (int)operand & hword1_mask;
+	}
+
+	// includes MA_Input_Reg.instrn.function == t_mips_instrn_set::LW
+		MA_Output.data = operand;
+		PC.offset += PCinc;		// increment Program Counter
+	  }	// closes MemoryReadAccess = 1
+	 }	// closes sim_waiting > 0
+	}	// closes valid instruction held up
+
+	 dump_state();
+	// closes ClockPhase = 0
+
+$phase1
+        if (isTrapped) stopSimulation(0);
+	MAHeld1 = MAHeld;
+// interrupt if TRAP
+	if (Interrupt == 1)
+	 {isTrapped = true; my_state=MA_VOID; dump_state();}
+
+// If MemoryReadAccess = 1 or MemoryWriteAccess = 1,
+// and MemReqOutstanding = 0, access memory
+
+	if (((MemoryReadAccess == 1) || (MemoryWriteAccess == 1))
+           && (MemReqOutstanding == 0))
+	   {
+	    send_MEM_ACCESS_D(to_memory, MemRequest);
+	    MemReqOutstanding = 1;
+	   }
+
+// If Forward = 1, send Output to Write Back Unit 
+
+	  if (((MA_Input_Reg.status & 1) == 1) && (Forward == 1))
+	   {
+	    MA_Output.status = MA_Input_Reg.status;
+	    send_WRITE_BACK(to_write_back, MA_Output);
+	   }
+
+	  else
+	   {
+	    MA_Output.status = 0;
+	    sim_schedule(to_write_back, 0.0, WRITE_BACK,
+			SIM_PUT(t_write_back_struct, MA_Output));
+	   }
+// If Update_PPC is set, send PC value(s) to Instruction Fetch Unit
+// This code will be updated later when a Branch History Table is included
+
+	  if (Update_PPC && ((MA_Input_Reg.status & 1) == 1))
+	   {
+	    BranchResult.branch = 0;
+	    BranchResult.status = 0;
+	    send_BRANCH_RESULT(to_instr_fetch, BranchResult);
+	    Update_PPC = false;
+	   }
+
+	// end of ClockPhase 1
+
+
+$report
+
+printf("Branches taken = %d \n", branches_taken);
+
+printf("Branches not taken = %d \n", branches_not_taken);
+
+
+
+
+
+
+
+

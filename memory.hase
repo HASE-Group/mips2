@@ -1,0 +1,274 @@
+
+// Project:	DLX V2
+// Entity	Memory
+// File:	memory.hase
+// Date:	4 Jan 2001
+
+// The Memory Unit contains two RARRAYs: instr_mem and data_mem.
+// These are separate because instructions are held in readable (string)
+// form for visualisation purposes.
+// It receives instruction requests from the Instruction Fetch Unit
+// and Read/Write requests from the Memory Access Unit.
+// Requests are processed in ClockPhase 0 and returned 
+// in a subsequent ClockPhase 1, depending on the Access Time parameter.
+// Multi-cycle access times are implemented via a pipeline. This allows
+// for the possibility of modelling memory interleaving, giving the
+// potential to handle one access per clock even when the access time is
+// several clocks.
+
+// The Memory Unit checks for invalid access types and invalid addresses.
+// It does not currently prioritise requests.
+// This version updated to include byte address as well as data in each word
+
+$class_decls
+
+//structures and variables
+  t_i_mem_access InstrMemRequest;
+  t_instrn_reg InstrOutputBuffer[8];
+  t_d_mem_access DataMemRequest;
+  data_mem_word DataMemBuffer;
+  t_exe_rslt DataOutputBuffer[8];
+
+int operand;
+//half word and byte masks
+  int hword0_mask;
+  int hword1_mask;
+  int byte0_mask;
+  int byte1_mask;
+  int byte2_mask;
+  int byte3_mask;
+  int byte_sign1;
+
+  int AnyI;
+  int AnyD;
+
+  int i_state;		// these state values are used to deal with
+  int old_i_state;	// the differing states of the instruction
+  int d_state;		// and data memories
+  int old_d_state;
+  int set_i_busy;
+  int set_d_busy;
+
+  int Mem_Output_Data;
+
+$pre
+
+//half word and byte masks
+  hword0_mask = -1 ^ 65535;		// 11111111 11111111 00000000 00000000
+  hword1_mask = 65535;		// 00000000 00000000 11111111 11111111
+  byte0_mask = -1 ^ 16777215;	// 11111111 00000000 00000000 00000000
+  byte1_mask = 16777215 ^ 65535;	// 00000000 11111111 00000000 00000000
+  byte2_mask = 65535 ^ 255;		// 00000000 00000000 11111111 00000000
+  byte3_mask = 255;			// 00000000 00000000 00000000 11111111
+  byte_sign1 = -1 ^ 255;		// 11111111 11111111 11111111 00000000
+
+ AnyI = 0;
+ AnyD = 0;
+
+  my_state = M_IDLE;
+  i_state = 0;		// these state values are used to deal with
+  old_i_state = 0;	// the differing states of the instruction
+  d_state = 0;		// and data memories
+  old_d_state = 0;
+ set_i_busy = 0;
+ set_d_busy = 0;
+
+	strcpy (DATA, "IDLE");
+	strcpy (INSTRUCTION, "IDLE");
+	dump_state();
+
+$phase0
+
+// predicates for use in sim_wait tests
+
+  sim_from_port i_access(instr_request);	    
+  sim_from_port d_access(data_request);
+
+	// PROGRESS PIPELINES AND CHECK FOR VALID REQUESTS
+
+	AnyI = 0;	// initialise valid instruction request flag
+	AnyD = 0;	// initialise valid data request flag
+
+	for (int j=(i_accesstime - 1); j>=1; j--)
+	 {
+	  InstrOutputBuffer[j].status = InstrOutputBuffer[j-1].status;
+		if ((InstrOutputBuffer[j-1].status & 1) == 1)
+		{AnyI = 1;}	// set instruction request flag to 1
+	  InstrOutputBuffer[j].instrn = InstrOutputBuffer[j-1].instrn;
+	 }
+
+	for (int j=(d_accesstime - 1); j>=1; j--)
+	 {
+	  DataOutputBuffer[j].status = DataOutputBuffer[j-1].status;
+		if ((DataOutputBuffer[j-1].status & 1) == 1)
+		{AnyD = 1;}	// set data request flag to 1
+	  DataOutputBuffer[j].data = DataOutputBuffer[j-1].data;
+	 }
+
+  InstrOutputBuffer[0].status = 0; // set pipeline 0 stages non-valid -
+  DataOutputBuffer[0].status = 0; // will be set valid if there is a request
+
+	 if ((AnyI == 0) && (sim_waiting(i_access) > 0))
+	  {		// instruction request -  access Instruction Memory
+	   sim_select(i_access, ev);
+	   SIM_CAST(t_i_mem_access, InstrMemRequest, ev);
+  	   set_i_busy = 1;
+	   strcpy (INSTRUCTION, "READ");
+
+	   int addr = instr_mem.process(InstrMemRequest.addr.label, InstrMemRequest.addr.offset);
+	   if (addr < I_Mem_Size) {
+	    	InstrOutputBuffer[0].instrn = instr_mem[addr];
+	       	InstrOutputBuffer[0].status = InstrMemRequest.status | 1;
+		// status bits are simply copied through to output
+		// apart from bit 31 which is set to 1 (= Valid in processor)
+		if (is_a_function(InstrOutputBuffer[0].instrn) == 0)
+		 {
+		  InstrOutputBuffer[0].status = 0;
+		  stopSimulation(-1);	// unimplemented function
+		 }
+	   } else {
+	       InstrOutputBuffer[0].status = 0;
+	       stopSimulation(-10);	// Invalid instruction memory address	
+	   }
+	}
+	 if (sim_waiting(d_access) > 0)
+	  {		// data request -  access Data Memory
+	   sim_select(d_access, ev);
+	   SIM_CAST(t_d_mem_access, DataMemRequest, ev);
+
+	   if ((DataMemRequest.status & 1) == 0)		// read request
+ 	   {
+  	    set_d_busy = 1;
+	    strcpy (DATA, "READ");
+	    
+//	    memory_reads++;	    
+
+		if (DataMemRequest.address < D_Mem_Size)
+		 {
+		  DataMemBuffer.data = data_mem[DataMemRequest.address].data;
+		  
+          	  DataOutputBuffer[0].data =  DataMemBuffer.data;
+		  DataOutputBuffer[0].status =  DataMemRequest.status | 1;
+		  
+		// status bits are simply copied through to output
+		// apart from bit 31 which is set to 1 (= Valid in processor)
+		 }
+		else
+		 {
+		  DataMemBuffer.data = 0;
+		  stopSimulation(-11);	// Invalid read data memory address
+		 }
+	    }
+
+	    if ((DataMemRequest.status & 1) == 1)	// write request
+	   {
+
+	// To allow SB and SH to update a byte or a half word, data is read
+	// from memory and loaded into MemBuffer.  The data is sent from the
+	// MA unit in the correct position for writing, and type bits 2-5
+	// indicate which bytes are to be updated. Except in the case of a
+	// full word write, these bytes are set to zero and the new data
+	// then ORed into MemBuffer. MemBuffer is then written back to memory.
+
+  	    set_d_busy = 1;
+	    strcpy(DATA, "WRITE");
+	
+//	    memory_writes++;	    
+
+	 if (DataMemRequest.address < D_Mem_Size)
+	  {
+	   DataOutputBuffer[0].data = 0;
+	   DataOutputBuffer[0].status = 3;
+	   DataMemBuffer.data = data_mem[DataMemRequest.address].data;
+
+	   if ((DataMemRequest.status & 60) == 32)	// write to byte 0
+	    {
+		DataMemBuffer.data = (int) DataMemBuffer.data & (-1 ^ byte0_mask);
+		DataMemBuffer.data = (int) DataMemBuffer.data |
+					((int) DataMemRequest.data & byte0_mask);
+
+		}
+	else if ((DataMemRequest.status & 60) == 16)	// write to byte 1
+		{
+		DataMemBuffer.data = (int) DataMemBuffer.data & (-1 ^ byte1_mask);
+		DataMemBuffer.data = (int) DataMemBuffer.data |
+					((int) DataMemRequest.data & byte1_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 8)	// write to byte 2
+		{
+		DataMemBuffer.data = (int) DataMemBuffer.data & (-1 ^ byte2_mask);
+		DataMemBuffer.data = (int) DataMemBuffer.data |
+					((int) DataMemRequest.data & byte2_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 4)	// write to byte 3
+		{
+		DataMemBuffer.data = (int)DataMemBuffer.data & (-1 ^ byte3_mask);
+		DataMemBuffer.data = (int)DataMemBuffer.data |
+					((int)DataMemRequest.data & byte3_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 48)	// write to hword 0
+		{
+		DataMemBuffer.data = (int)DataMemBuffer.data & hword1_mask;
+		DataMemBuffer.data = (int)DataMemBuffer.data |
+					((int)DataMemRequest.data & hword0_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 12)	// write to hword 1
+		{
+		DataMemBuffer.data = (int)DataMemBuffer.data & hword0_mask;
+		DataMemBuffer.data = (int)DataMemBuffer.data |
+					((int)DataMemRequest.data & hword1_mask);
+		}
+	else if ((DataMemRequest.status & 60) == 60)	// write to word
+		{DataMemBuffer.data = DataMemRequest.data;}
+
+	 data_mem.Update(DataMemRequest.address, DataMemBuffer);
+		// update memory & screen
+	    }	// closes valid request
+		 else
+		  {
+		   stopSimulation(-12); // Invalid write data memory address
+		  }
+	  }	// closes write request
+	}	// closes data request
+
+	i_state = 0;
+	my_state = M_IDLE;
+	if ((set_i_busy == 1) || (AnyI == 1))
+	 {i_state = 1; my_state = M_BUSY;
+	  set_i_busy = 0;
+	} else {strcpy (INSTRUCTION, "IDLE");}
+
+	d_state = 0;
+	if ((set_d_busy == 1) || (AnyD == 1))
+	 {d_state = 1; my_state = M_BUSY;
+	  set_d_busy = 0;
+	} else {strcpy (DATA, "IDLE");}
+
+	if ((i_state != old_i_state) || (d_state != old_d_state))
+	 {dump_state();
+	  old_i_state = i_state;
+	  old_d_state = d_state;
+	 }
+
+ 	// end of ClockPhase 0
+
+$phase1
+	  if ((InstrOutputBuffer[i_accesstime - 1].status & 1) == 1)
+				// send instruction to IF
+	  {
+	   send_MEM_INSTR(instr_out, InstrOutputBuffer[i_accesstime -1]);
+	  }
+
+	  if ((DataOutputBuffer[d_accesstime - 1].status & 3) == 1)
+						// send data to MA
+	  {
+	   send_MEM_DATA(data_out, DataOutputBuffer[d_accesstime-1]);
+	  }
+
+	  if ((DataOutputBuffer[d_accesstime - 1].status & 3) == 3)
+						// send ack to MA
+	  {
+	   send_MEM_DATA(data_out, DataOutputBuffer[d_accesstime-1]);
+	  }
+
+	// end of ClockPhase 1

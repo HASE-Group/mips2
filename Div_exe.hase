@@ -1,0 +1,249 @@
+
+// Project:	MIPS V2.0
+// Entity	Divide Execution Unit
+// File	div_exe.hase
+// Date:	17 Aug 2004
+
+
+// All Execution Unit receives instruction/operand packets from the Register
+// Fetch Unit and send instruction/operand packets to the Memory Access Unit. 
+// Each contains a pipeline with length equal to its latency value.
+// This value is a parameter of the Entity, so the code is designed to
+// deal with any value (>=1) and can be common to all units
+// In the model the result is computed in the first stage and simply
+// copied through the remaining pipeline stages
+
+// The Divide Unit executes instructions DIV and DIVF
+// All data values in the memory are stored as integers, so for DIVF
+// they are converted to floating point before the arith operation and 
+// converted back to integers afterwards by surreptitious casting
+
+$class_decls
+
+//entity references
+
+  sim_entity_id pipe;
+
+  mem_access * myMA;
+
+//structures and variables
+  t_instrn_reg Instruction;
+  unit_data_struct InputPacket, InputBuffer, Pipeline[8];
+  t_exe_rslt result;
+
+  bool Hold;
+  bool div_error;
+
+  int Any;		// Unit is active if Any pipeline stage is valid
+  int old_state;
+
+//classes
+  t_exe_rslt Result();
+  float float1, float2, float3;
+  int int1, int2;
+  double uint1, uint2;
+
+$class_defs
+
+t_exe_rslt Div_exe::Result()
+
+// computes result of instruction/operands in first pipeline stage
+{
+	  if (InputBuffer.instrn.function == t_mips_instrn_set::DIV)
+		{
+		if (InputBuffer.data2 == 0)
+		 {
+		  div_error = true;
+ 	 	  stopSimulation(0);// integer divide by zero
+		 }
+		 else
+		 {
+		  result.status = 0;
+		  int1 = (int)InputBuffer.data1;
+		  int2 = (int)InputBuffer.data2;
+		
+		  result.data = (float)(int1 / int2);
+		 }
+		}
+	  if (InputBuffer.instrn.function == t_mips_instrn_set::DIVU)
+		{
+		if (InputBuffer.data2 == 0)
+		 {
+		  div_error = true;
+ 	 	  stopSimulation(0);// integer divide by zero
+		 }
+		 else
+		 {
+		  result.status = 0;
+		  uint1 = InputBuffer.data1;//IntToUint((int)InputBuffer.data1);
+		  uint2 = InputBuffer.data2;//IntToUint((int)InputBuffer.data2);
+		
+		  result.data = (float)(int1 / int2);
+		 }
+		}
+
+	  else if (InputBuffer.instrn.function == t_mips_instrn_set::DIVS)
+		{
+		//truncate the floats
+		float1 = (float) InputBuffer.data1;
+		float2 = (float) InputBuffer.data2;
+		 if (float2 == 0)
+		  {
+ 	 	   stopSimulation(-45);// fl-pt divide by zero
+		  }
+		 else
+		 {
+		  result.status = 0;
+		  float3 = float1 / float2;
+		  result.data = float3;
+		 }
+		}
+/*	  
+	else if (InputBuffer.instrn.function == t_mips_instrn_set::DIVD)
+		{
+		 if (InputBuffer.data2 == 0)
+		  {
+ 	 	   stopSimulation(-45);// fl-pt divide by zero
+		  }
+		 else
+		 {
+		  result.status = 0;
+		  result.data = InputBuffer.data1 / InputBuffer.data2;
+		 }
+		}
+*/
+	return result;
+}
+
+$pre
+
+  pipe = sim.get_entity_id("PIPE_DISP");
+
+  myMA = (mem_access*)sim.get_entity(sim.get_entity_id("MEM_ACCESS"));
+
+  div_error = false;
+  Hold = false;
+  Any = 0;		// Unit is active if Any pipeline stage is valid
+  my_state = ED_VOID;
+  old_state = ED_VOID;
+  dump_state();
+
+// initialise pipeline 
+
+	for (int j=0; j < 8; j++)
+	{
+	Pipeline[j].status = 0;
+	Pipeline[j].instrn.reset();
+	}
+
+  int1 = 0;
+  int2 = 0;
+
+$phase0
+
+// predicates for use in sim_waiting test
+
+  sim_from_port input_packet(div_instr_in);	    
+
+    if (Hold)
+    {
+	  if (my_state == ED_BUSY)
+	  {my_state = ED_HELD;} // i.e. pipeline busy but stalled
+    }
+
+   else	// Hold = 0
+
+   {
+    // PROGRESS PIPELINE
+
+    // move instruction/operand packets through pipeline registers
+    // NB in hardware the Pipeline registers would be copied
+    // simultaneously. In the simulation they are dealt with serially,
+    // so need to start at the output end
+
+	Any = 0;
+	for (int i= (latency-1); i>=1; i--)
+	 {
+	 Pipeline[i].status = Pipeline[i-1].status;
+		if ((Pipeline[i].status & 1) == 1)
+		{Any = 1;}
+	 Pipeline[i].instrn = Pipeline[i-1].instrn;
+	 Pipeline[i].data1 = Pipeline[i-1].data1;
+	 Pipeline[i].data2 = Pipeline[i-1].data2;
+	 }
+
+// DEAL WITH INPUT
+
+    InputBuffer.status = 0;		// initialise to nonvalid
+     if  (sim_waiting(ev, input_packet) > 0)
+      {
+	SIM_CAST( unit_data_struct, InputPacket, ev);
+	
+	InputBuffer.instrn = InputPacket.instrn;
+	InputBuffer.data1  = InputPacket.data1;
+	InputBuffer.data2  = InputPacket.data2;
+	InputBuffer.status = InputPacket.status;
+      }
+
+
+// if Stage 0 contains a valid instruction, compute Result and
+// copy into first Pipeline stage output register (Pipeline[0])
+
+	if ((InputBuffer.status & 1) == 1)
+	  {Any = 1;
+	   Pipeline[0].instrn = InputBuffer.instrn;
+	   Pipeline[0].data1  = Result().data;
+//	   Pipeline[0].data2  = InputBuffer.data2;	// In Integer Unit
+	   Pipeline[0].data2  = 0;
+	   Pipeline[0].status = InputBuffer.status | Result().status;
+	  }
+         else
+	  {Pipeline[0].data1 = 0;
+	   Pipeline[0].status = 0;}
+
+// set void/active state in display
+	if (Any == 1)
+	  {my_state = ED_BUSY;} // i.e. valid instruction received
+	else
+	  {my_state = ED_VOID;} // i.e. non-valid instruction received
+
+   }		// closes Hold = 0
+
+// send packet to pipeline display
+
+		Instruction.status = InputBuffer.status;
+		Instruction.instrn = InputBuffer.instrn;
+		sim_schedule(pipe, 0.0, INSTRUCTION,
+			SIM_PUT(t_instrn_reg, Instruction));
+	 if (my_state != old_state)
+	  {dump_state();
+	   old_state = my_state;}
+
+	// end of ClockPhase = 0
+
+$phase1
+	Hold = myMA->MAHeld;
+
+// IF NOT HELD UP, SEND OUTPUT TO MA
+
+	if (!Hold)
+	{
+
+// Send result in last to MEM_ACCESS unit - if valid, packet is animated
+// MEM_ACCESS unit determines which packet is valid
+
+	 if ((Pipeline[latency-1].status & 1) == 1)
+	  {send_UNIT_DATA(div_instr_out, Pipeline[latency-1], 0.0, 17, 2 );}
+	 else
+	  {sim_schedule(div_instr_out, 0.0, UNIT_DATA,
+			SIM_PUT(unit_data_struct, Pipeline[latency-1]));}
+	}
+
+	// end of  ClockPhase 1
+
+$report
+
+  if (div_error)
+   {printf("Simulation aborted: attempted divide by zero\n");}
+
+

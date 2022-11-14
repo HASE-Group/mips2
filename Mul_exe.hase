@@ -1,0 +1,196 @@
+
+// Project:	DLX V2.3
+// Entity	Multiply Execution Unit
+// File		mul_exe.hase
+// Date:	3 April 2002
+
+
+// All Execution Unit receives instruction/operand packets from the Register
+// Fetch Unit and send instruction/operand packets to the Memory Access Unit. 
+// Each contains a pipeline with length equal to its latency value.
+// This value is a parameter of the Entity, so the code is designed to
+// deal with any value (>=1) and can be common to all units
+// In the model the result is computed in the first stage and simply
+// copied through the remaining pipeline stages
+
+// The Multiply Unit executes instructions MULT and MULTF
+// All data values in the memory are stored as integers, so for MULTF
+// they are converted to floating point before the arith operation and 
+// converted back to integers afterwards by surreptitious casting
+
+// April 2002 Updated to use new clock mechanism
+
+$class_decls
+
+//entity references
+
+  sim_entity_id pipe;
+
+  mem_access * myMA;
+
+//structures and variables
+  t_instrn_reg Instruction;
+  unit_data_struct InputPacket, InputBuffer, Pipeline[8];
+  t_exe_rslt result;
+
+  bool Hold;
+
+  int Any;		// Unit is active if Any pipeline stage is valid
+  int old_state;
+
+//classes
+  t_exe_rslt Result();
+
+$class_defs
+
+t_exe_rslt Mul_exe::Result()
+// computes result of instruction/operands in first pipeline stage
+{
+  float float1, float2, float3;
+
+	  if (InputBuffer.instrn.function == t_mips_instrn_set::MULT)
+		{
+		result.status = 0;
+		result.data = InputBuffer.data1 * InputBuffer.data2;
+		}
+	  if (InputBuffer.instrn.function == t_mips_instrn_set::MULTU)
+		{
+		result.status = 0;
+//		result.data = (float)(IntToUint((int)InputBuffer.data1) * IntToUint((int)InputBuffer.data2));
+		result.data = (float)(InputBuffer.data1 * InputBuffer.data2);
+		}
+	  else if (InputBuffer.instrn.function == t_mips_instrn_set::MULS)
+		{
+		float1 = (float) InputBuffer.data1;
+		float2 = (float) InputBuffer.data2;
+		float3 = float1 * float2;
+		result.data = float3;
+		result.status = 0;
+		}
+	return result;
+}
+
+$pre
+
+  pipe = sim.get_entity_id("PIPE_DISP");
+
+  myMA = (mem_access*)sim.get_entity(sim.get_entity_id("MEM_ACCESS"));
+  Hold = false;
+  Any = 0;		// Unit is active if Any pipeline stage is valid
+  my_state = EM_VOID;
+  old_state = EM_VOID;
+  dump_state();
+
+// initialise pipeline 
+
+		for (int j=0; j < 8; j++)
+		{
+		Pipeline[j].status = 0;
+		Pipeline[j].instrn.reset();
+		}
+
+$phase0
+
+// predicates for use in sim_waiting test
+
+  sim_from_port input_packet(mul_instr_in);	    
+
+     if (Hold)
+    {
+	  if (my_state == EM_BUSY)
+	  {my_state = EM_HELD;} // i.e. pipeline busy but stalled
+    }
+
+   else	// Hold = 0
+
+   {
+    // PROGRESS PIPELINE
+
+    // move instruction/operand packets through pipeline registers
+    // NB in hardware the Pipeline registers would be copied
+    // simultaneously. In the simulation they are dealt with serially,
+    // so need to startat the output end
+
+	Any = 0;
+	for (int i= (latency-1); i>=1; i--)
+	 {
+	 Pipeline[i].status = Pipeline[i-1].status;
+		if ((Pipeline[i].status & 1) == 1)
+		{Any = 1;}
+	 Pipeline[i].instrn = Pipeline[i-1].instrn;
+	 Pipeline[i].data1 = Pipeline[i-1].data1;
+	 Pipeline[i].data2 = Pipeline[i-1].data2;
+	 }
+
+    // DEAL WITH INPUT
+
+     InputBuffer.status = 0;		// initialise to nonvalid
+     if  (sim_waiting(ev, input_packet) > 0)
+      {
+	SIM_CAST( unit_data_struct, InputPacket, ev);
+
+	InputBuffer.instrn = InputPacket.instrn;
+	InputBuffer.data1  = InputPacket.data1;
+	InputBuffer.data2  = InputPacket.data2;
+	InputBuffer.status = InputPacket.status;
+      }
+
+
+// if Stage 0 contains a valid instruction, compute Result and
+// copy into first Pipeline stage output register (Pipeline[0])
+
+	if ((InputBuffer.status & 1) == 1)
+	  {Any = 1;
+	   Pipeline[0].instrn = InputBuffer.instrn;
+	   Pipeline[0].data1  = Result().data;
+//	   Pipeline[0].data2  = InputBuffer.data2;	// In Integer Unit
+	   Pipeline[0].data2  = 0;
+	   Pipeline[0].status = InputBuffer.status | Result().status;
+	  }
+         else
+	  {Pipeline[0].data1 = 0;
+	   Pipeline[0].status = 0;}
+
+// set void/active state in display
+	if (Any == 1)
+	  {my_state = EM_BUSY;} // i.e. valid instruction received
+	else
+	  {my_state = EM_VOID;} // i.e. non-valid instruction received
+
+   }		// closes Hold = 0
+
+// send packet to pipeline display
+
+		Instruction.status = InputBuffer.status;
+		Instruction.instrn = InputBuffer.instrn;
+		sim_schedule(pipe, 0.0, INSTRUCTION,
+			SIM_PUT(t_instrn_reg, Instruction));
+	 if (my_state != old_state)
+	  {dump_state();
+	   old_state = my_state;}
+
+
+	// end of  ClockPhase 0
+
+$phase1
+	Hold = myMA->MAHeld;
+
+	// IF NOT HELD UP, SEND OUTPUT TO MA
+	if (!Hold)
+	{
+
+// Send result in last to MEM_ACCESS unit - if valid, packet is animated
+// MEM_ACCESS unit determines which packet is valid
+
+	 if ((Pipeline[latency-1].status & 1) == 1)
+	  {send_UNIT_DATA(mul_instr_out, Pipeline[latency-1], 0.0, 17, 2 );}
+	 else
+	  {sim_schedule(mul_instr_out, 0.0, UNIT_DATA,
+			SIM_PUT(unit_data_struct, Pipeline[latency-1]));}
+	}
+
+	// end of  ClockPhase 1
+
+
+
+

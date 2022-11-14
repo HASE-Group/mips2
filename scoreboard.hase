@@ -1,0 +1,274 @@
+//
+// Project:	DLX V2.2
+// Entity:	Scoreboard
+// File:	scoreboard.hase
+// Date:	1 Mar 2001
+//
+
+// The Scoreboard checks for structural and control hazards and displays
+// data hazards. CheckDHazFree checks for Structural Hazards, i.e. the
+// execution units are unable to accept a new instruction because another
+// would complete at the same time and for Control Hazards, i.e. a branch
+// cannot enter the Integer Unit if there is any instruction in the
+// execution units which it could overtake.
+// SB keeps a latencyQ into which the latency  of each new instruction
+// is entered as it is issued. On a function call the Q entries move along
+// and are decremented by 1 as they go, until they reach 0, at which point
+// the instruction will complete. Structural hazards are detected by
+// indexing into the Q using the latency of the incoming instruction
+// and checking the value in the Q against the index. If 0, the new
+// instruction would comlete at the same time as one in the units, and
+// so must wait a cycle before being issued. 
+
+// Data hazards (WAW, RAW) are detected by the Instruction Decode Unit,
+// which invokes classes in the Scoreboard to drive the display.
+
+// V2.2 differs from V2.1 in that it is not clocked
+
+$class_decls
+
+  mem_access * myMA;
+
+  int interrupt;
+
+//structures
+
+  t_mips_instrn_set Instruction;
+
+// latency variables 
+
+  int latency, intl, fltl, mull, divl, maxl;	//latencies
+  int latencyQ[8];	// set to likely maximum required
+  int Any[8];		// accumulates remaining latency values
+			// Any[0] is set if any latency value >0 is left in Q
+  int stop;
+
+// variable setting/resetting functions
+
+  void setWAW( char destT, int dest);		// display only
+  void resetWAW( );
+  void setRAW1( char typ1, int src1 );
+  void resetRAW1( );
+  void setRAW2( char typ2, int src2 );
+  void resetRAW2( );
+  void setStrucHaz( int x );
+  void setContHaz( int x );
+  void clearHaz();
+  void Display();
+
+  int CheckHazards(t_instrn_reg Instrn);
+
+  void setInterrupt( int x ) { interrupt = x; };
+
+$class_defs
+
+
+int scoreboard::CheckHazards(t_instrn_reg Instrn)
+{
+  int haz;
+
+// work out new latency value
+
+  if ((Instrn.instrn.function == t_mips_instrn_set::DIV)
+	|| (Instrn.instrn.function == t_mips_instrn_set::DIVS)
+	|| (Instrn.instrn.function == t_mips_instrn_set::DIVU))
+	{latency = divl;}
+
+  else if ((Instrn.instrn.function == t_mips_instrn_set::MULT)
+	|| (Instrn.instrn.function == t_mips_instrn_set::MULTU)
+	|| (Instrn.instrn.function == t_mips_instrn_set::MULS))
+	{latency = mull;}
+
+  else if ((Instrn.instrn.function == t_mips_instrn_set::ADDS)
+        || (Instrn.instrn.function == t_mips_instrn_set::SUBS)
+	|| (Instrn.instrn.function == t_mips_instrn_set::ABSS)
+	|| (Instrn.instrn.function == t_mips_instrn_set::CVTWS)
+	|| (Instrn.instrn.function == t_mips_instrn_set::CVTSW)
+	|| Instrn.instrn.decode_FPCP()
+	|| (Instrn.instrn.function == t_mips_instrn_set::NEGS))
+	/*|| Instrn.instrn.decode_COMP()*/
+	{latency = fltl;}
+
+  else
+  	{latency = 1;}
+
+// set latency = 0 if instruction can't issue
+
+  if ((Instrn.status & 1) == 0)				{latency = 0;}
+
+// move latencyQ values if !MAHeld and check contents
+
+  for (int i=0; i<maxl; i++)	// clear Any values to 0
+   {
+    Any[i] = 0;
+   }
+  if (!myMA->MAHeld)
+   {
+	for (int i=maxl-1; i>=1; i--)
+	{
+	latencyQ[i] = latencyQ[i-1] - 1;
+	if (latencyQ[i] == 7)
+	  {Any[7] = 1;}
+	if (latencyQ[i] == 6)
+	  {Any[6] = 1;}
+	if (latencyQ[i] == 5)
+	  {Any[5] = 1;}
+	if (latencyQ[i] == 4)
+	  {Any[4] = 1;}
+	if (latencyQ[i] == 3)
+	  {Any[3] = 1;}
+	if (latencyQ[i] == 2)
+	  {Any[2] = 1;}
+	if (latencyQ[i] == 1)
+	  {Any[1] = 1;}
+	if (latencyQ[i] >= 1)
+	  {Any[0] = 1;}
+
+// The following two instructions can be useful for debugging
+	}
+   }
+
+// Set free = 0 if there is a latency value in the Q equal to the
+// new latency (unless it's 0) or if the instruction is a branch and
+// there is any non-zero latency in the Q
+
+   if  ((latency != 0) && (Any[latency] == 1))
+	{
+	haz = 1;			// data hazard -  can't issue
+	}
+	else
+	{
+	 haz = 0;			// i.e. can issue
+	}
+
+   if  (  ((Instrn.status & 1) != 0) 
+	 && 	(   Instrn.instrn.decode_JIMM()
+		 || (Instrn.instrn.function == t_mips_instrn_set::JR)
+		 || Instrn.instrn.decode_BRNC()
+		// || Instrn.instrn.decode_BFP()
+		)
+           && (Any[0] == 1)
+	)
+	{haz = haz + 2;}			// control hazard - can't issue
+
+// insert new latency value into latencyQ
+
+	latencyQ[0] = latency;
+
+	return haz;
+}
+
+void scoreboard::setWAW(char destT, int dest )
+{
+	if (destT == 'R')
+	{sprintf(WAW, "R%d", dest);}
+	else if (destT == 'F')
+	{sprintf(WAW, "F%d", dest);}
+	else if (destT == 'S')
+	{sprintf(WAW, "S%d", dest);}
+}
+
+void scoreboard::resetWAW( )
+{
+	strcpy(WAW,"---");
+
+}
+
+void scoreboard::setRAW1(char typ1, int src1)
+{
+	if (typ1 == 'R')
+	{sprintf(RAW1, "R%d", src1);}
+	else if (typ1 == 'F')
+	{sprintf(RAW1, "F%d", src1);}
+	else if (typ1 == 'S')
+	{sprintf(RAW1, "S%d", src1);}
+}
+
+void scoreboard::resetRAW1()
+{
+	strcpy(RAW1,"---");
+}
+
+void scoreboard::setRAW2(char typ2, int src2)
+{
+	if (typ2 == 'R')
+	{sprintf(RAW2, "R%d", src2);}
+	else if (typ2 == 'F')
+	{sprintf(RAW2, "F%d", src2);}
+	else if (typ2 == 'S')
+	{sprintf(RAW2, "S%d", src2);}
+}
+
+void scoreboard::resetRAW2()
+{
+	strcpy(RAW2,"---");
+}
+
+void scoreboard::setStrucHaz( int x )
+{
+  if ( x == 0 )
+	{strcpy(SHzd,"---");}
+  else if ( x == 1 )
+	{strcpy(SHzd,"<<<");}
+//	dump_state_i();
+}
+
+void scoreboard::setContHaz( int x )
+{
+  if ( x == 0 )
+	{strcpy(SHzc,"---");}
+  else if ( x == 1 )
+	{strcpy(SHzc,"<<<");}
+//	dump_state_i();
+}
+
+void scoreboard::clearHaz()
+{
+//	IDHaz = 0;
+	strcpy(WAW,"---");
+	strcpy(RAW1,"---");
+	strcpy(RAW2,"---");
+	strcpy(SHzd,"---");
+	strcpy(SHzc,"---");
+}
+
+void scoreboard::Display()
+{
+dump_state();
+}
+
+$body
+
+myMA = (mem_access*)sim.get_entity(sim.get_entity_id("MEM_ACCESS"));
+
+// extract latency values
+ intl = 1;
+ fltl = Flt_exe::latency;
+ mull = Mul_exe::latency;
+ divl = Div_exe::latency;
+ maxl = 8;
+
+for (int i=0; i<maxl; i++)	// initialise latency Q and Any values to 0
+{
+  latencyQ[i] = 0;
+}
+
+
+strcpy(WAW,"---");
+strcpy(RAW1,"---");
+strcpy(RAW2,"---");
+strcpy(SHzd,"---");
+strcpy(SHzc,"---");
+dump_state();
+
+
+
+
+
+
+
+
+
+
+
+

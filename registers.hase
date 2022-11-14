@@ -1,0 +1,187 @@
+//
+// Project:	MIPS I
+// Entity:	Registers
+// File:	registers.hase
+// Date:	9 Jan 2000
+//
+// Each of the Programmable Registers contains its line number, a value
+// and a busy bit which indicates that it is the target of an instruction
+// currently being executed. To set up the line numbers:
+// main registers are initially loaded from REGISTERS.main_reg.mem
+// fl-pt registers are initially loaded from REGISTERS.float_reg.mem
+// 
+// The registers respond to:
+//	read requests from the Instruction Decode Unit,
+//	set destination busy requests from the Instruction Decode Unit,
+//	register write requests from Write Back Unit.
+// This unit is not clocked - synchronisation is maintained because
+// it always sends a packet back to a requesting unit, and the
+// requesting unit always waits for this response.
+// R0 is always contains 0. The Write Back unit is coded to write 0 to it
+
+$class_decls
+
+  sim_entity_id set_dest_busy;
+
+  set_dest_busy_struct set_dest_busy_pkt;
+  t_reg_read ReadMe;
+  t_reg_write WriteMe;
+  t_reg_value Value;
+  t_prog_reg update;
+
+  int Rbusy( int index ) { return main_reg.vec[index].reg_busy; };
+  int Fbusy( int index ) { return float_reg.vec[index].reg_busy; };
+  int Sbusy( int index ) { return hilo_reg.vec[index].reg_busy; };
+  double Rvalue( int index ) { return main_reg.vec[index].reg_value; };
+  double Fvalue( int index ) { return float_reg.vec[index].reg_value; };
+  double Svalue( int index ) { return hilo_reg.vec[index].reg_value; };
+// .vec means update array, but not screen highlighting
+  void setDestBusy( char* DestRegType, int DestRegNo);
+
+  int old_state;
+  int src, dest;
+  char *type, *destT;
+//  void initialise(void);
+// may add a class here to re-initialise the registers when an animation
+// is restarted
+
+$class_defs
+
+void registers::setDestBusy( char* DestRegType, int DestRegNo)
+// scheduled by Read Operand Unit to set Destination Register `Busy'
+{
+//	update.reg_no = DestRegNo;
+	update.reg_busy = 1;
+
+		
+	
+	if (strcmp(DestRegType, "R") == 0)
+	{
+
+		update.reg_value = main_reg.vec[DestRegNo].reg_value;
+		main_reg.Update(DestRegNo, update);
+	 }	
+
+	else if (strcmp(DestRegType, "F") == 0)
+	{update.reg_value = float_reg.vec[DestRegNo].reg_value;
+	 float_reg.Update(DestRegNo, update);}
+	
+	else if (strcmp(DestRegType, "S") == 0)
+	{update.reg_value = hilo_reg.vec[DestRegNo].reg_value;
+	 hilo_reg.Update(DestRegNo, update);}
+}
+
+$body
+
+ my_state = RF_IDLE;
+ old_state = RF_IDLE;
+ dump_state();
+
+while(1)
+{
+  sim_get_next(ev);
+
+   if (ev.type()== SET_DEST_BUSY)	// set destination busy
+   {
+	SIM_CAST( set_dest_busy_struct, set_dest_busy_pkt, ev);
+	setDestBusy(set_dest_busy_pkt.destT, set_dest_busy_pkt.dest);
+   }
+
+   else if (ev.from_port(from_instr_decode1))	// Source register 1 access
+  {
+	my_state = RF_READ;
+	dump_state();
+	old_state = my_state;
+
+	SIM_CAST( t_reg_read, ReadMe, ev );
+
+	type = ReadMe.reg_type;
+	src = ReadMe.reg_no;
+
+	if (strcmp(type, "R") == 0)
+	{
+
+		Value.value = main_reg[src].reg_value;
+	}
+	if (strcmp(type, "F") == 0)
+		{Value.value = float_reg[src].reg_value;}
+	if (strcmp(type, "S") == 0)
+		{Value.value = hilo_reg[src].reg_value;}
+
+//	sim_hold(1);
+	send_REG_VALUE(to_instr_decode1, Value);
+  }
+
+  else if ( ev.from_port(from_instr_decode2))	// Source register 2 access
+  {
+	my_state = RF_READ;
+	dump_state();
+	old_state = my_state;
+
+	SIM_CAST( t_reg_read, ReadMe, ev );
+
+	type = ReadMe.reg_type;
+	src = ReadMe.reg_no;
+	if (strcmp(type, "R") == 0)
+	{
+		Value.value = main_reg[src].reg_value;
+	}
+	if (strcmp(type, "F") == 0)
+		{Value.value = float_reg[src].reg_value;}
+	if (strcmp(type, "S") == 0)
+		{Value.value = hilo_reg[src].reg_value;}
+
+//	sim_hold(1);
+	send_REG_VALUE(to_instr_decode2, Value);
+  }
+  
+    else if ( ev.from_port(from_write_back ))	// Register write access
+    {
+	my_state = RF_WRITE;
+	dump_state();
+	old_state = my_state;
+	SIM_CAST(t_reg_write, WriteMe, ev);
+
+	destT = WriteMe.reg_type;
+	dest = WriteMe.reg_no;
+
+//	update.reg_no = dest;
+	update.reg_busy = 0;
+
+	if (strcmp(destT, "F") == 0)
+	{
+	  update.reg_value = WriteMe.data;
+	  float_reg.Update( dest, update );	//Update registers & screen
+	}
+	
+	else if (strcmp(destT, "R") == 0)
+	{
+	  if (dest == 0)
+	  {
+	   update.reg_value = 0;
+	  }
+	  else
+	  {
+	  update.reg_value = WriteMe.data;
+	  }
+		main_reg.Update( dest, update );
+	}
+
+	else if (strcmp(destT, "S") == 0)
+	{
+	  update.reg_value = WriteMe.data;
+	  hilo_reg.Update( dest, update );	//Update registers & screen
+	}
+
+    }
+
+  sim_hold(1);
+  my_state = RF_IDLE;
+  if (my_state != old_state)
+  {dump_state();
+   old_state = my_state;
+  }
+
+}	// closes while
+
+

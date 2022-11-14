@@ -1,0 +1,99 @@
+crest : position (610,15)
+title_v2 : position (270,450)
+
+SCOREBOARD : position (100,320)
+SCOREBOARD : PARAM WAW  MODE VALUE POSITION (69,42)
+SCOREBOARD : PARAM RAW1 MODE VALUE POSITION (69,61)
+SCOREBOARD : PARAM RAW2 MODE VALUE POSITION (69,82)
+SCOREBOARD : PARAM SHzd  MODE VALUE POSITION (69,102)
+SCOREBOARD : PARAM SHzc  MODE VALUE POSITION (69,121)
+
+
+CLOCK : position (580,100)
+CPHASE : position (580,100)
+CPHASE : STATES S:ClockS P0:ClockP0 P1:ClockP1
+CPHASE : PARAM cycle MODE VALUE POSITION (70,35)
+
+PIPE_DISP : position (555,230)
+PIPE_DISP : PARAM I_F MODE VALUE POSITION (47, 42)
+PIPE_DISP : PARAM I_D MODE VALUE POSITION (47, 62)
+PIPE_DISP : PARAM EX1 MODE VALUE POSITION (47, 82)
+PIPE_DISP : PARAM EX2 MODE VALUE POSITION (47, 102)
+PIPE_DISP : PARAM EX3 MODE VALUE POSITION (47, 122)
+PIPE_DISP : PARAM EX4 MODE VALUE POSITION (47, 142)
+PIPE_DISP : PARAM M_A MODE VALUE POSITION (47, 162)
+PIPE_DISP : PARAM W_B MODE VALUE POSITION (47, 182)
+
+MEMORY : position (5,15)
+MEMORY : STATES M_IDLE:memory M_BUSY:memory_busy
+MEMORY : port instr_request side BOTTOM position 25 ICON portu
+MEMORY : port instr_out side BOTTOM position 45
+MEMORY : port data_out side BOTTOM position 515
+MEMORY : port data_request side BOTTOM position 495 ICON portu
+MEMORY : PARAM INSTRUCTION MODE VALUE POSITION (320,22)
+MEMORY : PARAM DATA MODE VALUE POSITION (470,22)
+
+REGISTERS : position (130,95)
+REGISTERS : STATES RF_IDLE:registers RF_WRITE:registers_write RF_READ:registers_read
+REGISTERS : port from_instr_decode1 side BOTTOM position 20 ICON portu
+REGISTERS : port to_instr_decode1 side BOTTOM position 35
+REGISTERS : port from_instr_decode2 side BOTTOM position 60 ICON portu
+REGISTERS : port to_instr_decode2 side BOTTOM position 75
+REGISTERS : port from_write_back side RIGHT position 40 ICON portl
+
+INSTR_FETCH : position (5,210)
+INSTR_FETCH : STATES IF_VOID:instr_fetch IF_BUSY:instr_fetch_busy IF_HELD:instr_fetch_held
+INSTR_FETCH : port to_memory side TOP position 25
+INSTR_FETCH : port from_memory side TOP position 45 ICON portd
+INSTR_FETCH : port instr_out side RIGHT position 40
+INSTR_FETCH : port new_pc_in side LEFT position 20 ICON portblank
+INSTR_FETCH : PARAM PPC MODE VALUE POSITION (45,91)
+
+INSTR_DECODE : position (130,210)
+INSTR_DECODE : STATES ID_VOID:instr_decode ID_BUSY:instr_decode_busy ID_HELD:instr_decode_held
+INSTR_DECODE : port instr_in side LEFT position 40 ICON portr
+INSTR_DECODE : port to_registers1 side TOP position 20
+INSTR_DECODE : port from_registers1 side TOP position 35 ICON portd
+INSTR_DECODE : port to_registers2 side TOP position 60
+INSTR_DECODE : port from_registers2 side TOP position 75 ICON portd
+INSTR_DECODE : port int_instr_out side RIGHT position 40
+INSTR_DECODE : port flt_instr_out side RIGHT position 40
+INSTR_DECODE : port mul_instr_out side RIGHT position 40
+INSTR_DECODE : port div_instr_out side RIGHT position 40
+
+INT_EXE : position (270,150)
+INT_EXE : STATES EI_VOID:int_exe EI_BUSY:int_exe_busy EI_HELD:int_exe_held
+INT_EXE : port int_instr_in side LEFT position 25 ICON portr
+INT_EXE : port int_instr_out side RIGHT position 25
+
+FLT_EXE : position (270,210)
+FLT_EXE : STATES EF_VOID:flt_exe EF_BUSY:flt_exe_busy EF_HELD:flt_exe_held
+FLT_EXE : port flt_instr_in side LEFT position 25 ICON portr
+FLT_EXE : port flt_instr_out side RIGHT position 25
+
+MUL_EXE : position (270,280)
+MUL_EXE : STATES EM_VOID:mul_exe EM_BUSY:mul_exe_busy EM_HELD:mul_exe_held
+MUL_EXE : port mul_instr_in side LEFT position 25 ICON portr
+MUL_EXE : port mul_instr_out side RIGHT position 25
+
+DIV_EXE : position (270,350)
+DIV_EXE : STATES ED_VOID:div_exe ED_BUSY:div_exe_busy ED_HELD:div_exe_held
+DIV_EXE : port div_instr_in side LEFT position 25 ICON portr
+DIV_EXE : port div_instr_out side RIGHT position 25
+
+MEM_ACCESS : position (400,210)
+MEM_ACCESS : STATES MA_VOID:mem_access MA_BUSY:mem_access_busy MA_HELD:mem_access_held
+MEM_ACCESS : port from_int_exe side LEFT position 40 ICON portr
+MEM_ACCESS : port from_flt_exe side LEFT position 40 ICON portr
+MEM_ACCESS : port from_mul_exe side LEFT position 40 ICON portr
+MEM_ACCESS : port from_div_exe side LEFT position 40 ICON portr
+MEM_ACCESS : port to_memory side TOP position 100
+MEM_ACCESS : port from_memory side TOP position 120 ICON portd
+MEM_ACCESS : port to_write_back side TOP position 30
+MEM_ACCESS : port to_instr_fetch side RIGHT position 40 ICON portblank
+MEM_ACCESS : PARAM PC MODE VALUE POSITION (40,91)
+
+WRITE_BACK : position (400,95)
+WRITE_BACK : STATES W_VOID:write_back W_BUSY:write_back_busy
+WRITE_BACK : port instr_in side BOTTOM position 30 ICON portu
+WRITE_BACK : port to_registers side LEFT position 40
