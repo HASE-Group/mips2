@@ -4,7 +4,7 @@
 CLOCK (clockName)
 IDLE (INSTRUCTION)
 IDLE (DATA)
-2 100 1 (d_accesstime)
+2 8 1 (d_accesstime)
 1 (i_accesstime)
 65536 (I_Mem_Size)
 65536 (D_Mem_Size)

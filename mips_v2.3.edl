@@ -14,6 +14,8 @@ PARAMLIB (
 
 -- DEFINITION OF INSTRUCTION STRUCTURES
 
+   STRUCT ( t_reg_args, [ RCHAR(type, 'R'), RINT(number, 0), RINT(index, 0) ] );
+
 -- load instruction group (I-type)
 -- this is a variant of the DLX I-type designed to allow the decoder to deal
 -- with brackets in the assembly code instructions
