@@ -320,7 +320,6 @@ $phase0
 	   if (cond)
 	   {
 		branches_taken++; //for statistics // was commented out
-printf("branch taken\n");
 		
 		Forward = 0;	
 		if(atoi(MA_Input_Reg.instrn.label) != 0)

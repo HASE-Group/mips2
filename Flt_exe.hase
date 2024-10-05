@@ -51,7 +51,7 @@ $class_defs
 t_exe_rslt Flt_exe::Result()
 // computes result of instruction/operands in first pipeline stage
 {
-  float float1, float2, float3;
+  float float1, float2;
 
   //For simulation loss of precision when using SP floats
   float1 = (float) InputBuffer.data1;
