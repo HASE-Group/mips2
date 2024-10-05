@@ -82,9 +82,12 @@ int MemoryReadAccess;
 int MemoryWriteAccess;
 char *reg31_label; // use to save the label when JAL
 
-int branches_taken, branches_not_taken;
+int branches_taken;
+int branches_not_taken;
 $pre
 
+branches_taken = 0;
+branches_not_taken = 0;
 pipe = sim.get_entity_id("PIPE_DISP");
 
 myIF = (instr_fetch*)sim.get_entity(sim.get_entity_id("INSTR_FETCH"));
